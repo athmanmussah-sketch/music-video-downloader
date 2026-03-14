@@ -2,7 +2,7 @@
 """
 Next-Level Video Downloader for Termux
 Developer: DarkX Dev (255775710774)
-Version: 3.0.0
+Version: 3.0.1
 """
 
 import os
@@ -11,6 +11,7 @@ import json
 import time
 import shutil
 import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -94,27 +95,40 @@ def print_banner():
 ║      ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝  ╚═╝                 ║
 ║                                                              ║
 ║            NEXT-LEVEL DOWNLOADER - TERMUX EDITION           ║
-║                                                              ║
+║                         VERSION 3.0.1                        ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ║  Developer: DarkX Dev                      Contact: 255775710774  ║
-║  Version: 3.0.0                              Features: Playlist,  ║
-║  Search, Subtitles, History, Config, Auto-update, TQDM      ║
+║  Features: Playlist, Search, Subtitles, History, Config,    ║
+║            Auto-update, TQDM, Watermark (Video & Audio)     ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 """
     print_colored(banner, 'cyan', bold=True)
 
 def check_dependencies():
-    """Check if yt-dlp is installed and update it."""
+    """Check if yt-dlp and ffmpeg are installed."""
+    deps_ok = True
     try:
         subprocess.run(['yt-dlp', '--version'], capture_output=True, check=True)
-        # Auto-update yt-dlp
+        print_colored("[✓] yt-dlp found", 'green')
+    except:
+        deps_ok = False
+        print_colored("[!] yt-dlp not found", 'red')
+    
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        print_colored("[✓] ffmpeg found", 'green')
+    except:
+        deps_ok = False
+        print_colored("[!] ffmpeg not found (required for watermark)", 'yellow')
+    
+    # Auto-update yt-dlp
+    if deps_ok:
         print_colored("[i] Checking for yt-dlp updates...", 'yellow')
         subprocess.run(['pip', 'install', '--upgrade', 'yt-dlp'], capture_output=True)
-        return True
-    except:
-        return False
+    
+    return deps_ok
 
 def install_dependencies():
     print_colored("[i] Installing required dependencies...", 'yellow')
@@ -148,6 +162,8 @@ def check_disk_space(url, min_free_mb=100):
 
 def add_to_history(filepath):
     """Save downloaded file to history."""
+    if not os.path.exists(filepath):
+        return
     history = []
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, 'r') as f:
@@ -168,10 +184,13 @@ def show_history():
         with open(HISTORY_FILE, 'r') as f:
             history = json.load(f)
         if history:
-            print_colored("\n[ DOWNLOAD HISTORY ]", 'cyan', bold=True)
+            print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+            print_colored("║                     DOWNLOAD HISTORY                        ║", 'cyan', bold=True)
+            print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
             for i, entry in enumerate(reversed(history[-10:]), 1):
                 size_mb = entry['size'] / (1024*1024)
-                print_colored(f"  {i}. {entry['file'][:40]}... ({size_mb:.1f} MB) - {entry['time'][:19]}", 'yellow')
+                date_str = entry['time'][:19].replace('T', ' ')
+                print_colored(f"  {i}. {entry['file'][:40]}... ({size_mb:.1f} MB) - {date_str}", 'yellow')
         else:
             print_colored("\n[ No downloads yet ]", 'yellow')
     else:
@@ -196,43 +215,58 @@ def search_youtube(query):
     except:
         return None
 
-# ========== DOWNLOAD CORE ==========
-def download_with_progress(command, description="Downloading"):
-    """Run yt-dlp with progress bar (if tqdm available) or simple output."""
-    if HAS_TQDM:
-        # Use tqdm to show progress (simulate by parsing yt-dlp output)
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        pbar = None
-        for line in process.stdout:
-            if '%' in line:
-                try:
-                    # Extract percentage
-                    parts = line.split()
-                    for part in parts:
-                        if part.endswith('%'):
-                            percent = float(part.strip('%'))
-                            if pbar is None:
-                                pbar = tqdm(total=100, desc=description, unit='%')
-                            pbar.n = percent
-                            pbar.refresh()
-                            break
-                except:
-                    pass
-            print(line, end='')  # Also print original output
-        if pbar:
-            pbar.close()
-        process.wait()
-        return process.returncode == 0
-    else:
-        # Fallback to simple run
-        try:
-            subprocess.run(command, check=True)
-            return True
-        except:
-            return False
+def apply_video_watermark(filepath):
+    """Add 'Downloaded by DarkX Official' text watermark to top-right corner."""
+    if not shutil.which('ffmpeg'):
+        print_colored("[!] ffmpeg not found, skipping watermark", 'yellow')
+        return False
+    
+    # Create temporary file
+    temp_file = filepath + ".temp" + os.path.splitext(filepath)[1]
+    
+    # FFmpeg command: drawtext with black border
+    cmd = [
+        'ffmpeg', '-i', filepath,
+        '-vf', "drawtext=text='Downloaded by DarkX Official':fontcolor=white:fontsize=24:x=w-tw-10:y=10:bordercolor=black:borderw=2",
+        '-codec:a', 'copy',
+        '-y', temp_file
+    ]
+    
+    try:
+        print_colored("[i] Applying video watermark...", 'cyan')
+        subprocess.run(cmd, check=True, capture_output=True)
+        # Replace original with watermarked version
+        shutil.move(temp_file, filepath)
+        print_colored("[✓] Watermark added to video", 'green')
+        return True
+    except subprocess.CalledProcessError as e:
+        print_colored("[!] Failed to apply watermark", 'red')
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
 
+def apply_audio_watermark(filepath):
+    """Rename audio file to include watermark text in filename."""
+    dirname = os.path.dirname(filepath)
+    basename = os.path.basename(filepath)
+    name, ext = os.path.splitext(basename)
+    new_basename = f"{name} [DarkX Official]{ext}"
+    new_path = os.path.join(dirname, new_basename)
+    
+    # Avoid overwriting if already exists
+    counter = 1
+    while os.path.exists(new_path):
+        new_basename = f"{name} [DarkX Official {counter}]{ext}"
+        new_path = os.path.join(dirname, new_basename)
+        counter += 1
+    
+    os.rename(filepath, new_path)
+    print_colored(f"[✓] Audio filename updated: {new_basename}", 'green')
+    return new_path
+
+# ========== DOWNLOAD CORE ==========
 def download_media(url, quality, format_choice, subtitles=False, subtitle_lang='en'):
-    """Main download function."""
+    """Main download function with watermark post-processing."""
     # Prepare output template
     filename_template = os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s')
     
@@ -245,6 +279,7 @@ def download_media(url, quality, format_choice, subtitles=False, subtitle_lang='
         '-o', filename_template,
         '--newline',
         '--no-warnings',
+        '--print', 'after_move:filepath'  # Print final file path(s)
     ]
     
     # Add format
@@ -261,19 +296,75 @@ def download_media(url, quality, format_choice, subtitles=False, subtitle_lang='
     
     command.append(url)
     
-    print_colored(f"\n[⬇] Downloading...", 'green')
-    success = download_with_progress(command)
+    print_colored(f"\n╔══════════════════════════════════════════════════════════════╗", 'magenta', bold=True)
+    print_colored(f"║                     DOWNLOADING...                            ║", 'magenta', bold=True)
+    print_colored(f"╚══════════════════════════════════════════════════════════════╝", 'magenta', bold=True)
+    
+    # Run yt-dlp and capture output
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, bufsize=1, universal_newlines=True)
+    
+    output_lines = []
+    if HAS_TQDM:
+        pbar = None
+        for line in process.stdout:
+            output_lines.append(line.rstrip())
+            if '%' in line:
+                try:
+                    parts = line.split()
+                    for part in parts:
+                        if part.endswith('%'):
+                            percent = float(part.strip('%'))
+                            if pbar is None:
+                                pbar = tqdm(total=100, desc="Progress", unit='%')
+                            pbar.n = percent
+                            pbar.refresh()
+                            break
+                except:
+                    pass
+            print(line, end='')
+        if pbar:
+            pbar.close()
+    else:
+        for line in process.stdout:
+            output_lines.append(line.rstrip())
+            print(line, end='')
+    
+    process.wait()
+    success = process.returncode == 0
     
     if success:
-        # Find the downloaded file (rough guess)
-        # yt-dlp prints the filename at the end; we could capture but for simplicity:
-        # We'll rely on user knowing the folder. Alternatively, we can parse output.
-        # Here we just add a dummy entry to history; you could improve.
         print_colored(f"\n[✓] Download completed successfully!", 'green')
-        # Try to get the actual filename from yt-dlp's output
-        # For now, we'll skip adding exact file to history; user can see in folder.
-        # But we can add a placeholder.
-        add_to_history(os.path.join(DOWNLOAD_FOLDER, "latest_download"))
+        
+        # Extract file paths from output (lines printed by --print after_move:filepath)
+        file_paths = []
+        for line in output_lines:
+            line = line.strip()
+            # Look for lines that look like file paths (start with DOWNLOAD_FOLDER and have extension)
+            if line.startswith(DOWNLOAD_FOLDER) and os.path.exists(line):
+                file_paths.append(line)
+        
+        if not file_paths:
+            # Fallback: try to find most recent file in folder (not reliable)
+            print_colored("[!] Could not determine downloaded file(s)", 'yellow')
+            return success
+        
+        # Process each downloaded file
+        for filepath in file_paths:
+            if not os.path.exists(filepath):
+                continue
+            
+            # Apply watermark based on format
+            if format_choice == 'mp3':
+                new_path = apply_audio_watermark(filepath)
+                add_to_history(new_path)
+            elif format_choice in ['mp4', 'mkv']:
+                if apply_video_watermark(filepath):
+                    add_to_history(filepath)
+                else:
+                    add_to_history(filepath)  # Still add original
+            else:
+                add_to_history(filepath)
     else:
         print_colored(f"\n[✗] Download failed. Check URL and internet.", 'red')
     
@@ -281,14 +372,16 @@ def download_media(url, quality, format_choice, subtitles=False, subtitle_lang='
 
 # ========== USER INTERFACES ==========
 def quality_menu():
-    print_colored("\n[ QUALITY OPTIONS ]", 'cyan', bold=True)
+    print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+    print_colored("║                     QUALITY OPTIONS                           ║", 'cyan', bold=True)
+    print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
     print_colored(" 1. 4K Ultra HD (2160p)", 'yellow')
     print_colored(" 2. 1080p Full HD", 'yellow')
-    print_colored(" 3. 720p HD", 'yellow')
+    print_colored(" 3. 720p HD (Default)", 'yellow')
     print_colored(" 4. 480p (Mobile)", 'yellow')
     print_colored(" 5. 360p (Small)", 'yellow')
     print_colored(" 6. Audio only (MP3)", 'yellow')
-    print_colored(" 7. Custom resolution (e.g., 720, 1080)", 'yellow')
+    print_colored(" 7. Custom resolution (e.g., 720)", 'yellow')
     print_colored(" 8. Best quality (no limit)", 'yellow')
     choice = input("⚡ Choose (1-8): ").strip()
     
@@ -313,7 +406,9 @@ def quality_menu():
     return quality_map.get(choice, quality_map['3'])
 
 def format_menu():
-    print_colored("\n[ FORMAT OPTIONS ]", 'cyan', bold=True)
+    print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+    print_colored("║                     FORMAT OPTIONS                            ║", 'cyan', bold=True)
+    print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
     print_colored(" 1. MP4 Video", 'yellow')
     print_colored(" 2. MP3 Audio", 'yellow')
     print_colored(" 3. MKV Video", 'yellow')
@@ -322,7 +417,9 @@ def format_menu():
     return format_map.get(choice, 'mp4')
 
 def subtitle_menu():
-    print_colored("\n[ SUBTITLES ]", 'cyan', bold=True)
+    print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+    print_colored("║                     SUBTITLES OPTIONS                         ║", 'cyan', bold=True)
+    print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
     choice = input("Download subtitles? (y/n): ").strip().lower()
     if choice == 'y':
         lang = input("Language code (e.g., en, sw, fr) [default=en]: ").strip() or 'en'
@@ -340,7 +437,9 @@ def handle_playlist(url):
         if result.returncode == 0 and result.stdout:
             data = json.loads(result.stdout.strip().split('\n')[0])
             if 'playlist_count' in data or 'playlist' in url:
-                print_colored("\n[ PLAYLIST DETECTED ]", 'magenta', bold=True)
+                print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'magenta', bold=True)
+                print_colored("║                     PLAYLIST DETECTED                        ║", 'magenta', bold=True)
+                print_colored("╚══════════════════════════════════════════════════════════════╝", 'magenta', bold=True)
                 print_colored(f"Title: {data.get('playlist', 'Unknown')}", 'yellow')
                 print_colored("Options:", 'cyan')
                 print_colored(" 1. Download entire playlist", 'yellow')
@@ -367,22 +466,20 @@ def handle_playlist(url):
                     indices = input("Enter video numbers to download (e.g., 1,3,5-10): ").strip()
                     # Parse indices and return selected URLs
                     selected = []
-                    # Simple parsing (can be improved)
                     parts = indices.split(',')
                     for part in parts:
                         if '-' in part:
                             start, end = map(int, part.split('-'))
                             selected.extend(range(start-1, min(end, len(videos))))
-                        else:
-                            if part.isdigit():
-                                selected.append(int(part)-1)
+                        elif part.isdigit():
+                            selected.append(int(part)-1)
                     selected_urls = [videos[i]['url'] for i in selected if 0 <= i < len(videos)]
                     return selected_urls
                 elif choice == '3':
-                    # Download entire playlist as audio
-                    return [url]  # Signal to download playlist with audio format
+                    # Download entire playlist as audio - treat as single URL with audio format later
+                    return [url]
                 elif choice == '1':
-                    return [url]  # Download full playlist
+                    return [url]
                 else:
                     return None
     except:
@@ -391,7 +488,9 @@ def handle_playlist(url):
 
 def get_user_input():
     """Main menu to get download parameters."""
-    print_colored("\n[ MAIN MENU ]", 'cyan', bold=True)
+    print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+    print_colored("║                         MAIN MENU                             ║", 'cyan', bold=True)
+    print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
     print_colored(" 1. Download from URL(s)", 'yellow')
     print_colored(" 2. Search YouTube and download", 'yellow')
     print_colored(" 3. Batch download from file (URLs list)", 'yellow')
@@ -405,7 +504,9 @@ def settings_menu():
     global config, DOWNLOAD_FOLDER
     while True:
         clear_screen()
-        print_colored("[ SETTINGS ]", 'cyan', bold=True)
+        print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+        print_colored("║                         SETTINGS                              ║", 'cyan', bold=True)
+        print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
         print_colored(f" 1. Download folder: {config['download_folder']}", 'yellow')
         print_colored(f" 2. Default quality: {config['default_quality'][:50]}...", 'yellow')
         print_colored(f" 3. Default format: {config['default_format']}", 'yellow')
@@ -450,7 +551,7 @@ def main():
     
     # Check dependencies once at start
     if not check_dependencies():
-        print_colored("[!] yt-dlp not found! Installing...", 'yellow')
+        print_colored("[!] Required dependencies missing. Installing...", 'yellow')
         install_dependencies()
     
     while True:
@@ -506,7 +607,9 @@ def main():
                 input("Press Enter...")
                 continue
             
-            print_colored("\nSearch results:", 'cyan', bold=True)
+            print_colored("\n╔══════════════════════════════════════════════════════════════╗", 'cyan', bold=True)
+            print_colored("║                     SEARCH RESULTS                            ║", 'cyan', bold=True)
+            print_colored("╚══════════════════════════════════════════════════════════════╝", 'cyan', bold=True)
             for i, res in enumerate(results, 1):
                 title = res.get('title', 'Unknown')
                 duration = res.get('duration_string', 'N/A')
